@@ -14,7 +14,7 @@ const fetch = require('node-fetch');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // Enable CORS for all origins
 app.use(cors());
@@ -28,14 +28,23 @@ const RTD_TRIP_UPDATES = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/Tri
 const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb';
 
 // N Line stop IDs (from RTD GTFS data)
+// Note: RTD uses various formats, so we check multiple possibilities
 const N_LINE_STOPS = {
   'ustn': { name: 'Union Station', id: 'ustn' },
+  'union': { name: 'Union Station', id: 'union' },
+  'unionstation': { name: 'Union Station', id: 'unionstation' },
   '48th': { name: '48th & Brighton/National Western Center', id: '48th' },
+  '48thbrighton': { name: '48th & Brighton/National Western Center', id: '48thbrighton' },
   '72nd': { name: 'Commerce City/72nd', id: '72nd' },
+  '72ndcommercecity': { name: 'Commerce City/72nd', id: '72ndcommercecity' },
   '88th': { name: 'Original Thornton/88th', id: '88th' },
+  '88ththornton': { name: 'Original Thornton/88th', id: '88ththornton' },
   '104th': { name: 'Thornton Crossroads/104th', id: '104th' },
+  '104ththornton': { name: 'Thornton Crossroads/104th', id: '104ththornton' },
   '112th': { name: 'Northglenn/112th', id: '112th' },
-  '124th': { name: 'Eastlake/124th', id: '124th' }
+  '112thnorthglenn': { name: 'Northglenn/112th', id: '112thnorthglenn' },
+  '124th': { name: 'Eastlake/124th', id: '124th' },
+  '124theastlake': { name: 'Eastlake/124th', id: '124theastlake' }
 };
 
 // TransitLand proxy endpoint
@@ -187,13 +196,71 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   }
 });
 
+// Debug endpoint - see all N Line data from RTD
+app.get('/api/rtd/debug', async (req, res) => {
+  try {
+    console.log('Fetching ALL RTD trip updates for debugging...');
+    const response = await fetch(RTD_TRIP_UPDATES);
+    const buffer = await response.arrayBuffer();
+    
+    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
+      new Uint8Array(buffer)
+    );
+
+    const nLineData = {
+      timestamp: Date.now(),
+      totalEntities: feed.entity.length,
+      nLineTrips: [],
+      allRoutes: new Set(),
+      allStopIds: new Set()
+    };
+    
+    feed.entity.forEach(entity => {
+      if (entity.tripUpdate) {
+        const routeId = entity.tripUpdate.trip.routeId;
+        nLineData.allRoutes.add(routeId);
+        
+        if (routeId === 'N' || routeId === 'n' || routeId.toLowerCase().includes('n-line')) {
+          const trip = entity.tripUpdate;
+          const tripData = {
+            tripId: trip.trip.tripId,
+            routeId: trip.trip.routeId,
+            directionId: trip.trip.directionId,
+            stops: []
+          };
+          
+          (trip.stopTimeUpdate || []).forEach(update => {
+            nLineData.allStopIds.add(update.stopId);
+            tripData.stops.push({
+              stopId: update.stopId,
+              arrivalTime: update.arrival?.time?.low,
+              departureTime: update.departure?.time?.low
+            });
+          });
+          
+          nLineData.nLineTrips.push(tripData);
+        }
+      }
+    });
+
+    nLineData.allRoutes = Array.from(nLineData.allRoutes);
+    nLineData.allStopIds = Array.from(nLineData.allStopIds);
+
+    res.json(nLineData);
+
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'RTD N Line API Proxy is running' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚆 RTD N Line API Proxy running on http://localhost:${PORT}`);
-  console.log(`📍 Test it: http://localhost:${PORT}/health`);
-  console.log(`🚉 Get arrivals: http://localhost:${PORT}/api/rtd/arrivals/ustn`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚆 RTD N Line API Proxy running on port ${PORT}`);
+  console.log(`📍 Health check: http://0.0.0.0:${PORT}/health`);
+  console.log(`🚉 Example: http://0.0.0.0:${PORT}/api/rtd/arrivals/ustn`);
 });
