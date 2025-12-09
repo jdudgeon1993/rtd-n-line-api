@@ -89,12 +89,12 @@ app.get('/api/rtd/arrivals', async (req, res) => {
     const nLineArrivals = [];
     
     feed.entity.forEach(entity => {
-      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === 'N') {
+      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
         const trip = entity.tripUpdate;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
         stopTimeUpdates.forEach(update => {
-          const stopId = update.stopId.toLowerCase();
+          const stopId = update.stopId.toLowerCase().trim();
           
           // Check if this is an N Line stop
           if (N_LINE_STOPS[stopId]) {
@@ -148,7 +148,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const arrivals = [];
     
     feed.entity.forEach(entity => {
-      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === 'N') {
+      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
         const trip = entity.tripUpdate;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
@@ -160,7 +160,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
               const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
               
               // Only show upcoming trains (within next 2 hours)
-              if (minutesUntil >= -2 && minutesUntil <= 120) {
+              if (minutesUntil >= -5 && minutesUntil <= 120) {
                 arrivals.push({
                   tripId: trip.trip.tripId,
                   directionId: trip.trip.directionId,
@@ -220,7 +220,7 @@ app.get('/api/rtd/debug', async (req, res) => {
         const routeId = entity.tripUpdate.trip.routeId;
         nLineData.allRoutes.add(routeId);
         
-        if (routeId === 'N' || routeId === 'n' || routeId.toLowerCase().includes('n-line')) {
+        if (routeId === 'N' || routeId === 'n' || routeId === '117N' || routeId.toLowerCase().includes('n-line')) {
           const trip = entity.tripUpdate;
           const tripData = {
             tripId: trip.trip.tripId,
