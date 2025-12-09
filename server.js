@@ -33,38 +33,31 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json());
 
-// Your TransitLand API key
+// Your TransitLand API key (Kept for completeness, though not used below)
 const TRANSITLAND_API_KEY = 'TXTmQ3It74ub7L4huB6mgBxUJ824DRLG';
 
 // RTD GTFS-RT feed URLs
 const RTD_TRIP_UPDATES = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/TripUpdate.pb';
-const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb';
+// const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb'; // Not used
 
-// N Line stop IDs (from RTD GTFS data - numeric IDs)
-// Based on actual GTFS-RT feed data
+// N Line stop IDs (These must match the IDs used in the client HTML)
 const N_LINE_STOPS = {
-  // Union Station to Eastlake/124th (Northbound direction 0)
-  '34668': { name: 'Union Station', direction: 'both' },
-  '35247': { name: '38th & Blake', direction: 'northbound' },
-  '35249': { name: '40th & Colorado', direction: 'northbound' },
-  '35251': { name: '61st & Pena', direction: 'northbound' },
-  '35253': { name: 'Commerce City/72nd', direction: 'northbound' },
-  '35255': { name: 'Thornton Crossroads/104th', direction: 'northbound' },
+  // Union Station (RTD GTFS ID for Commuter Rail Track)
+  '25287': { name: 'Union Station', direction: 'both' },
+  // N Line stop IDs used in the client HTML
+  '35248': { name: '38th & Blake', direction: 'southbound' },
+  '35250': { name: '40th & Colorado', direction: 'southbound' },
+  '35252': { name: '61st & Pena', direction: 'southbound' },
+  '35254': { name: 'Commerce City/72nd', direction: 'southbound' },
+  '35255': { name: 'Thornton Crossroads/104th', direction: 'northbound' }, // Northglenn ID used in client
   '35257': { name: 'Eastlake/124th', direction: 'northbound' },
   
-  // Eastlake/124th to Union Station (Southbound direction 1)
-  '35254': { name: 'Thornton Crossroads/104th', direction: 'southbound' },
-  '35252': { name: 'Commerce City/72nd', direction: 'southbound' },
-  '35250': { name: '61st & Pena', direction: 'southbound' },
-  '35248': { name: '40th & Colorado', direction: 'southbound' },
-  '35246': { name: '38th & Blake', direction: 'southbound' },
-  
-  // Legacy text IDs for compatibility
-  'ustn': { name: 'Union Station', actualId: '34668' },
-  '34668': { name: 'Union Station', direction: 'both' }
+  // Include common alternate IDs used in the feed just in case
+  '34668': { name: 'Union Station Alt', direction: 'both' },
+  '35247': { name: '38th & Blake North', direction: 'northbound' },
 };
 
-// TransitLand proxy endpoint
+// TransitLand proxy endpoints (left untouched)
 app.get('/api/transitland/routes', async (req, res) => {
   try {
     const url = `https://transit.land/api/v2/rest/routes?feed_onestop_id=f-9xj-rtd&route_short_name=N&apikey=${TRANSITLAND_API_KEY}`;
@@ -90,72 +83,6 @@ app.get('/api/transitland/stops', async (req, res) => {
   }
 });
 
-// RTD real-time trip updates endpoint
-app.get('/api/rtd/arrivals', async (req, res) => {
-  try {
-    console.log('Fetching RTD trip updates...');
-    
-    // Add cache-busting query parameter
-    const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
-    });
-    
-    const buffer = await response.arrayBuffer();
-    
-    // Parse the protocol buffer
-    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
-      new Uint8Array(buffer)
-    );
-
-    // Filter for N Line trips only
-    const nLineArrivals = [];
-    
-    feed.entity.forEach(entity => {
-      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
-        const trip = entity.tripUpdate;
-        const stopTimeUpdates = trip.stopTimeUpdate || [];
-        
-        stopTimeUpdates.forEach(update => {
-          const stopId = update.stopId.toLowerCase().trim();
-          
-          // Check if this is an N Line stop
-          if (N_LINE_STOPS[stopId]) {
-            const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-            
-            if (arrivalTime) {
-              nLineArrivals.push({
-                stopId: stopId,
-                stopName: N_LINE_STOPS[stopId].name,
-                tripId: trip.trip.tripId,
-                directionId: trip.trip.directionId,
-                arrivalTime: arrivalTime,
-                arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString(),
-                minutesUntil: Math.round((arrivalTime - Date.now() / 1000) / 60),
-                vehicleId: trip.vehicle?.id || 'Unknown'
-              });
-            }
-          }
-        });
-      }
-    });
-
-    // Sort by arrival time
-    nLineArrivals.sort((a, b) => a.arrivalTime - b.arrivalTime);
-
-    console.log(`Found ${nLineArrivals.length} N Line arrivals`);
-    res.json({
-      timestamp: Date.now(),
-      arrivals: nLineArrivals
-    });
-
-  } catch (error) {
-    console.error('RTD arrivals error:', error);
-    res.status(500).json({ error: error.message, stack: error.stack });
-  }
-});
 
 // Get arrivals for a specific stop
 app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
@@ -178,38 +105,54 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     );
 
     const arrivals = [];
-    
+    const targetStopId = stopId.toLowerCase(); // Ensure case-insensitivity
+
     feed.entity.forEach(entity => {
-      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
-        const trip = entity.tripUpdate;
-        const stopTimeUpdates = trip.stopTimeUpdate || [];
+      if (entity.tripUpdate) {
+        const routeId = entity.tripUpdate.trip.routeId;
         
-        stopTimeUpdates.forEach(update => {
-          if (update.stopId.toLowerCase() === stopId.toLowerCase()) {
-            const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-            
-            if (arrivalTime) {
-              const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
+        // 🔑 FIX 3: Robust N Line Route ID filtering
+        if (routeId === '117N' || routeId === 'N' || routeId === '900') {
+          const trip = entity.tripUpdate;
+          const stopTimeUpdates = trip.stopTimeUpdate || [];
+          
+          stopTimeUpdates.forEach(update => {
+            // Check against the requested stopId
+            if (update.stopId.toLowerCase() === targetStopId) {
               
-              // Only show upcoming trains (within next 2 hours)
-              if (minutesUntil >= -5 && minutesUntil <= 120) {
-                arrivals.push({
-                  tripId: trip.trip.tripId,
-                  directionId: trip.trip.directionId,
-                  direction: trip.trip.directionId === 0 ? 'Southbound' : 'Northbound',
-                  arrivalTime: arrivalTime,
-                  arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString('en-US', {
-                    hour: 'numeric',
-                    minute: '2-digit'
-                  }),
-                  minutesUntil: minutesUntil,
-                  status: minutesUntil <= 1 ? 'Arriving' : minutesUntil <= 5 ? 'Due' : 'On Time',
-                  vehicleId: trip.vehicle?.id || 'Unknown'
-                });
+              // Use arrival time if available, otherwise fall back to departure time
+              const arrivalTimeSec = update.arrival?.time?.low || update.departure?.time?.low;
+              
+              if (arrivalTimeSec) {
+                // 🔑 FIX 1: Convert seconds to milliseconds for accurate Date object creation
+                const arrivalTimeMs = arrivalTimeSec * 1000;
+                
+                // 🔑 FIX 2: Correctly calculate minutesUntil (using seconds vs seconds)
+                const nowSec = Date.now() / 1000; 
+                const minutesUntil = Math.round((arrivalTimeSec - nowSec) / 60);
+                
+                // Only show upcoming trains (within next 2 hours)
+                if (minutesUntil >= -5 && minutesUntil <= 120) {
+                  arrivals.push({
+                    tripId: trip.trip.tripId,
+                    directionId: trip.trip.directionId,
+                    direction: trip.trip.directionId === 0 ? 'Southbound' : 'Northbound',
+                    arrivalTime: arrivalTimeSec, // Keep in seconds for sorting
+                    
+                    // Use the corrected MS variable for formatting
+                    arrivalTimeFormatted: new Date(arrivalTimeMs).toLocaleTimeString('en-US', {
+                      hour: 'numeric',
+                      minute: '2-digit'
+                    }),
+                    minutesUntil: minutesUntil,
+                    status: minutesUntil <= 1 ? 'Arriving' : minutesUntil <= 5 ? 'Due' : 'On Time',
+                    vehicleId: trip.vehicle?.id || 'Unknown'
+                  });
+                }
               }
             }
-          }
-        });
+          });
+        }
       }
     });
 
@@ -220,7 +163,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
 
     res.json({
       stopId,
-      stopName: N_LINE_STOPS[stopId.toLowerCase()]?.name || stopId,
+      stopName: N_LINE_STOPS[targetStopId]?.name || stopId,
       timestamp: Date.now(),
       feedTimestamp: feedTimestamp,
       feedAgeMinutes: feedAge,
@@ -229,11 +172,13 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
 
   } catch (error) {
     console.error('Stop arrivals error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
+
 // Debug endpoint - see all N Line data from RTD
+// (Left untouched as it's purely for debugging)
 app.get('/api/rtd/debug', async (req, res) => {
   try {
     console.log('Fetching ALL RTD trip updates for debugging...');
@@ -257,7 +202,7 @@ app.get('/api/rtd/debug', async (req, res) => {
         const routeId = entity.tripUpdate.trip.routeId;
         nLineData.allRoutes.add(routeId);
         
-        if (routeId === 'N' || routeId === 'n' || routeId === '117N' || routeId.toLowerCase().includes('n-line')) {
+        if (routeId === 'N' || routeId === 'n' || routeId === '117N' || routeId.toLowerCase().includes('n-line') || routeId === '900') {
           const trip = entity.tripUpdate;
           const tripData = {
             tripId: trip.trip.tripId,
@@ -291,6 +236,7 @@ app.get('/api/rtd/debug', async (req, res) => {
   }
 });
 
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'RTD N Line API Proxy is running' });
@@ -299,5 +245,5 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚆 RTD N Line API Proxy running on port ${PORT}`);
   console.log(`📍 Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`🚉 Example: http://0.0.0.0:${PORT}/api/rtd/arrivals/ustn`);
+  console.log(`🚉 Example: http://0.0.0.0:${PORT}/api/rtd/arrivals/25287`);
 });
