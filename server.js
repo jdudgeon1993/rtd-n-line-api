@@ -27,24 +27,28 @@ const TRANSITLAND_API_KEY = 'TXTmQ3It74ub7L4huB6mgBxUJ824DRLG';
 const RTD_TRIP_UPDATES = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/TripUpdate.pb';
 const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb';
 
-// N Line stop IDs (from RTD GTFS data)
-// Note: RTD uses various formats, so we check multiple possibilities
+// N Line stop IDs (from RTD GTFS data - numeric IDs)
+// Based on actual GTFS-RT feed data
 const N_LINE_STOPS = {
-  'ustn': { name: 'Union Station', id: 'ustn' },
-  'union': { name: 'Union Station', id: 'union' },
-  'unionstation': { name: 'Union Station', id: 'unionstation' },
-  '48th': { name: '48th & Brighton/National Western Center', id: '48th' },
-  '48thbrighton': { name: '48th & Brighton/National Western Center', id: '48thbrighton' },
-  '72nd': { name: 'Commerce City/72nd', id: '72nd' },
-  '72ndcommercecity': { name: 'Commerce City/72nd', id: '72ndcommercecity' },
-  '88th': { name: 'Original Thornton/88th', id: '88th' },
-  '88ththornton': { name: 'Original Thornton/88th', id: '88ththornton' },
-  '104th': { name: 'Thornton Crossroads/104th', id: '104th' },
-  '104ththornton': { name: 'Thornton Crossroads/104th', id: '104ththornton' },
-  '112th': { name: 'Northglenn/112th', id: '112th' },
-  '112thnorthglenn': { name: 'Northglenn/112th', id: '112thnorthglenn' },
-  '124th': { name: 'Eastlake/124th', id: '124th' },
-  '124theastlake': { name: 'Eastlake/124th', id: '124theastlake' }
+  // Union Station to Eastlake/124th (Northbound direction 0)
+  '34668': { name: 'Union Station', direction: 'both' },
+  '35247': { name: '38th & Blake', direction: 'northbound' },
+  '35249': { name: '40th & Colorado', direction: 'northbound' },
+  '35251': { name: '61st & Pena', direction: 'northbound' },
+  '35253': { name: 'Commerce City/72nd', direction: 'northbound' },
+  '35255': { name: 'Thornton Crossroads/104th', direction: 'northbound' },
+  '35257': { name: 'Eastlake/124th', direction: 'northbound' },
+  
+  // Eastlake/124th to Union Station (Southbound direction 1)
+  '35254': { name: 'Thornton Crossroads/104th', direction: 'southbound' },
+  '35252': { name: 'Commerce City/72nd', direction: 'southbound' },
+  '35250': { name: '61st & Pena', direction: 'southbound' },
+  '35248': { name: '40th & Colorado', direction: 'southbound' },
+  '35246': { name: '38th & Blake', direction: 'southbound' },
+  
+  // Legacy text IDs for compatibility
+  'ustn': { name: 'Union Station', actualId: '34668' },
+  '34668': { name: 'Union Station', direction: 'both' }
 };
 
 // TransitLand proxy endpoint
@@ -94,7 +98,7 @@ app.get('/api/rtd/arrivals', async (req, res) => {
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
         stopTimeUpdates.forEach(update => {
-          const stopId = update.stopId.toLowerCase().trim();
+          const stopId = update.stopId.toString().trim();
           
           // Check if this is an N Line stop
           if (N_LINE_STOPS[stopId]) {
@@ -153,7 +157,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
         stopTimeUpdates.forEach(update => {
-          if (update.stopId.toLowerCase() === stopId.toLowerCase()) {
+          if (update.stopId.toString().trim() === stopId.toString().trim()) {
             const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
             
             if (arrivalTime) {
