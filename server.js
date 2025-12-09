@@ -94,7 +94,15 @@ app.get('/api/transitland/stops', async (req, res) => {
 app.get('/api/rtd/arrivals', async (req, res) => {
   try {
     console.log('Fetching RTD trip updates...');
-    const response = await fetch(RTD_TRIP_UPDATES);
+    
+    // Add cache-busting query parameter
+    const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+    
     const buffer = await response.arrayBuffer();
     
     // Parse the protocol buffer
@@ -155,7 +163,14 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const { stopId } = req.params;
     console.log(`Fetching arrivals for stop: ${stopId}`);
     
-    const response = await fetch(RTD_TRIP_UPDATES);
+    // Add cache-busting
+    const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+    
     const buffer = await response.arrayBuffer();
     
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
@@ -200,10 +215,15 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
 
     arrivals.sort((a, b) => a.arrivalTime - b.arrivalTime);
 
+    const feedTimestamp = feed.header?.timestamp?.low || Math.floor(Date.now() / 1000);
+    const feedAge = Math.floor((Date.now() / 1000 - feedTimestamp) / 60);
+
     res.json({
       stopId,
       stopName: N_LINE_STOPS[stopId.toLowerCase()]?.name || stopId,
       timestamp: Date.now(),
+      feedTimestamp: feedTimestamp,
+      feedAgeMinutes: feedAge,
       arrivals: arrivals.slice(0, 10) // Return next 10 arrivals
     });
 
