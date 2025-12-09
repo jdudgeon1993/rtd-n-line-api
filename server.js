@@ -16,7 +16,20 @@ const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Enable CORS for all origins
+// CRITICAL: CORS must be configured BEFORE any routes
+// This allows requests from ANY origin including Claude artifacts
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(cors());
 app.use(express.json());
 
@@ -98,7 +111,7 @@ app.get('/api/rtd/arrivals', async (req, res) => {
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
         stopTimeUpdates.forEach(update => {
-          const stopId = update.stopId.toString().trim();
+          const stopId = update.stopId.toLowerCase().trim();
           
           // Check if this is an N Line stop
           if (N_LINE_STOPS[stopId]) {
@@ -157,7 +170,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
         stopTimeUpdates.forEach(update => {
-          if (update.stopId.toString().trim() === stopId.toString().trim()) {
+          if (update.stopId.toLowerCase() === stopId.toLowerCase()) {
             const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
             
             if (arrivalTime) {
