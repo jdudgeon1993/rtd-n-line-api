@@ -53,6 +53,7 @@ const N_LINE_STOPS = {
   '35257': { name: 'Eastlake/124th', direction: 'northbound' },
   
   // Eastlake/124th to Union Station (Southbound direction 1)
+'35365': { name: 'Northglenn/112th', direction: 'southbound' },
   '35254': { name: 'Thornton Crossroads/104th', direction: 'southbound' },
   '35252': { name: 'Commerce City/72nd', direction: 'southbound' },
   '35250': { name: '61st & Pena', direction: 'southbound' },
