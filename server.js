@@ -67,11 +67,32 @@ const N_LINE_STOPS = {
 };
 
 // 16th Street Mall FreeRide bus stops
-// Stop IDs need to be verified from RTD GTFS data
+// Common stops along the 16th Street Mall route
 const FREERIDE_STOPS = {
-  '22367': { name: '16th St Mall & Arapahoe', direction: 'both' },
-  '34668': { name: 'Union Station', direction: 'both' }, // Union Station serves both
-  // Add more FreeRide stops as needed
+  // Union Station area
+  '34668': { name: 'Union Station', direction: 'both' },
+  '35367': { name: 'Union Station Bus Gates', direction: 'both' },
+  
+  // 16th Street Mall stops (heading toward Civic Center)
+  '22358': { name: '16th St Mall & Wynkoop', direction: 'both' },
+  '22359': { name: '16th St Mall & Wazee', direction: 'both' },
+  '22360': { name: '16th St Mall & Blake', direction: 'both' },
+  '22361': { name: '16th St Mall & Market', direction: 'both' },
+  '22362': { name: '16th St Mall & Larimer', direction: 'both' },
+  '22363': { name: '16th St Mall & Lawrence', direction: 'both' },
+  '22364': { name: '16th St Mall & Arapahoe', direction: 'both' },
+  '22365': { name: '16th St Mall & Curtis', direction: 'both' },
+  '22366': { name: '16th St Mall & Champa', direction: 'both' },
+  '22367': { name: '16th St Mall & Stout', direction: 'both' },
+  '22368': { name: '16th St Mall & California', direction: 'both' },
+  '22369': { name: '16th St Mall & Welton', direction: 'both' },
+  '22370': { name: '16th St Mall & Glenarm', direction: 'both' },
+  '22371': { name: '16th St Mall & Tremont', direction: 'both' },
+  '22372': { name: '16th St Mall & Court', direction: 'both' },
+  '22373': { name: '16th St Mall & Cleveland', direction: 'both' },
+  
+  // Civic Center Station
+  '35368': { name: 'Civic Center Station', direction: 'both' },
 };
 
 // TransitLand proxy endpoint
@@ -197,7 +218,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
         
         // Check if this is a route we care about (N Line OR FreeRide)
         const isNLine = routeId === '117N';
-        const isFreeRide = routeId === 'FREE' || routeId === 'MALL';
+        const isFreeRide = routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL');
         
         if (isNLine || isFreeRide) {
           stopTimeUpdates.forEach(update => {
@@ -282,7 +303,7 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
         const routeId = trip.trip.routeId;
         
         // Filter for FreeRide routes only
-        if (routeId === 'FREE' || routeId === 'MALL') {
+        if (routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL')) {
           const stopTimeUpdates = trip.stopTimeUpdate || [];
           
           stopTimeUpdates.forEach(update => {
@@ -403,4 +424,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚉 Train example: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
   console.log(`🚌 Bus example: http://0.0.0.0:${PORT}/api/rtd/bus/22367`);
   console.log(`🔍 Debug: http://0.0.0.0:${PORT}/api/rtd/debug`);
-}); 
+});
