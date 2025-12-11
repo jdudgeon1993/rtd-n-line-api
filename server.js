@@ -1,5 +1,6 @@
 // RTD N Line API Proxy Server
 // This bypasses CORS restrictions for TransitLand API calls
+// NOW INCLUDES: 16th Street Mall FreeRide Bus Support!
 // 
 // Setup Instructions:
 // 1. Save this file as 'server.js'
@@ -53,7 +54,7 @@ const N_LINE_STOPS = {
   '35257': { name: 'Eastlake/124th', direction: 'northbound' },
   
   // Eastlake/124th to Union Station (Southbound direction 1)
-'35365': { name: 'Northglenn/112th', direction: 'southbound' },
+  '35365': { name: 'Northglenn/112th', direction: 'southbound' },
   '35254': { name: 'Thornton Crossroads/104th', direction: 'southbound' },
   '35252': { name: 'Commerce City/72nd', direction: 'southbound' },
   '35250': { name: '61st & Pena', direction: 'southbound' },
@@ -63,6 +64,14 @@ const N_LINE_STOPS = {
   // Legacy text IDs for compatibility
   'ustn': { name: 'Union Station', actualId: '34668' },
   '34668': { name: 'Union Station', direction: 'both' }
+};
+
+// 16th Street Mall FreeRide bus stops
+// Stop IDs need to be verified from RTD GTFS data
+const FREERIDE_STOPS = {
+  '22367': { name: '16th St Mall & Arapahoe', direction: 'both' },
+  '34668': { name: 'Union Station', direction: 'both' }, // Union Station serves both
+  // Add more FreeRide stops as needed
 };
 
 // TransitLand proxy endpoint
@@ -158,7 +167,7 @@ app.get('/api/rtd/arrivals', async (req, res) => {
   }
 });
 
-// Get arrivals for a specific stop
+// Get arrivals for a specific stop (supports BOTH trains and buses)
 app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   try {
     const { stopId } = req.params;
@@ -181,36 +190,45 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const arrivals = [];
     
     feed.entity.forEach(entity => {
-      if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
+      if (entity.tripUpdate) {
         const trip = entity.tripUpdate;
+        const routeId = trip.trip.routeId;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
-        stopTimeUpdates.forEach(update => {
-          if (update.stopId.toString().trim() === stopId.toString().trim()) {
-            const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-            
-            if (arrivalTime) {
-              const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
+        // Check if this is a route we care about (N Line OR FreeRide)
+        const isNLine = routeId === '117N';
+        const isFreeRide = routeId === 'FREE' || routeId === 'MALL';
+        
+        if (isNLine || isFreeRide) {
+          stopTimeUpdates.forEach(update => {
+            if (update.stopId.toString().trim() === stopId.toString().trim()) {
+              const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
               
-              // Only show upcoming trains (within next 2 hours)
-              if (minutesUntil >= -5 && minutesUntil <= 120) {
-                arrivals.push({
-                  tripId: trip.trip.tripId,
-                  directionId: trip.trip.directionId,
-                  direction: trip.trip.directionId === 0 ? 'Southbound' : 'Northbound',
-                  arrivalTime: arrivalTime,
-                  arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString('en-US', {
-                    hour: 'numeric',
-                    minute: '2-digit'
-                  }),
-                  minutesUntil: minutesUntil,
-                  status: minutesUntil <= 1 ? 'Arriving' : minutesUntil <= 5 ? 'Due' : 'On Time',
-                  vehicleId: trip.vehicle?.id || 'Unknown'
-                });
+              if (arrivalTime) {
+                const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
+                
+                // Only show upcoming arrivals (within next 2 hours)
+                if (minutesUntil >= -5 && minutesUntil <= 120) {
+                  arrivals.push({
+                    tripId: trip.trip.tripId,
+                    routeId: routeId,
+                    route: isNLine ? 'N Line' : '16th St Mall',
+                    directionId: trip.trip.directionId,
+                    direction: trip.trip.directionId === 0 ? 'Southbound' : 'Northbound',
+                    arrivalTime: arrivalTime,
+                    arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString('en-US', {
+                      hour: 'numeric',
+                      minute: '2-digit'
+                    }),
+                    minutesUntil: minutesUntil,
+                    status: minutesUntil <= 1 ? 'Arriving' : minutesUntil <= 5 ? 'Due' : 'On Time',
+                    vehicleId: trip.vehicle?.id || 'Unknown'
+                  });
+                }
               }
             }
-          }
-        });
+          });
+        }
       }
     });
 
@@ -219,9 +237,13 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const feedTimestamp = feed.header?.timestamp?.low || Math.floor(Date.now() / 1000);
     const feedAge = Math.floor((Date.now() / 1000 - feedTimestamp) / 60);
 
+    const stopName = N_LINE_STOPS[stopId.toLowerCase()]?.name || 
+                     FREERIDE_STOPS[stopId]?.name || 
+                     stopId;
+
     res.json({
       stopId,
-      stopName: N_LINE_STOPS[stopId.toLowerCase()]?.name || stopId,
+      stopName: stopName,
       timestamp: Date.now(),
       feedTimestamp: feedTimestamp,
       feedAgeMinutes: feedAge,
@@ -234,7 +256,81 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   }
 });
 
-// Debug endpoint - see all N Line data from RTD
+// NEW: Dedicated bus endpoint for 16th Street Mall FreeRide
+app.get('/api/rtd/bus/:stopId', async (req, res) => {
+  try {
+    const { stopId } = req.params;
+    console.log(`Fetching bus arrivals for stop: ${stopId}`);
+    
+    const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+    
+    const buffer = await response.arrayBuffer();
+    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
+      new Uint8Array(buffer)
+    );
+
+    const busArrivals = [];
+    
+    feed.entity.forEach(entity => {
+      if (entity.tripUpdate) {
+        const trip = entity.tripUpdate;
+        const routeId = trip.trip.routeId;
+        
+        // Filter for FreeRide routes only
+        if (routeId === 'FREE' || routeId === 'MALL') {
+          const stopTimeUpdates = trip.stopTimeUpdate || [];
+          
+          stopTimeUpdates.forEach(update => {
+            if (update.stopId.toString().trim() === stopId.toString().trim()) {
+              const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
+              
+              if (arrivalTime) {
+                const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
+                
+                if (minutesUntil >= -2 && minutesUntil <= 60) {
+                  busArrivals.push({
+                    tripId: trip.trip.tripId,
+                    routeId: routeId,
+                    route: '16th St Mall',
+                    arrivalTime: arrivalTime,
+                    arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString('en-US', {
+                      hour: 'numeric',
+                      minute: '2-digit'
+                    }),
+                    minutesUntil: minutesUntil,
+                    status: minutesUntil <= 1 ? 'Arriving' : 'On Time',
+                    vehicleId: trip.vehicle?.id || 'Unknown'
+                  });
+                }
+              }
+            }
+          });
+        }
+      }
+    });
+
+    busArrivals.sort((a, b) => a.arrivalTime - b.arrivalTime);
+
+    res.json({
+      stopId,
+      stopName: FREERIDE_STOPS[stopId]?.name || '16th Street Mall',
+      route: '16th St Mall FreeRide',
+      timestamp: Date.now(),
+      arrivals: busArrivals.slice(0, 5)
+    });
+
+  } catch (error) {
+    console.error('Bus arrivals error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug endpoint - see all routes and stops
 app.get('/api/rtd/debug', async (req, res) => {
   try {
     console.log('Fetching ALL RTD trip updates for debugging...');
@@ -245,10 +341,11 @@ app.get('/api/rtd/debug', async (req, res) => {
       new Uint8Array(buffer)
     );
 
-    const nLineData = {
+    const debugData = {
       timestamp: Date.now(),
       totalEntities: feed.entity.length,
       nLineTrips: [],
+      busTrips: [],
       allRoutes: new Set(),
       allStopIds: new Set()
     };
@@ -256,35 +353,38 @@ app.get('/api/rtd/debug', async (req, res) => {
     feed.entity.forEach(entity => {
       if (entity.tripUpdate) {
         const routeId = entity.tripUpdate.trip.routeId;
-        nLineData.allRoutes.add(routeId);
+        debugData.allRoutes.add(routeId);
         
-        if (routeId === 'N' || routeId === 'n' || routeId === '117N' || routeId.toLowerCase().includes('n-line')) {
-          const trip = entity.tripUpdate;
-          const tripData = {
-            tripId: trip.trip.tripId,
-            routeId: trip.trip.routeId,
-            directionId: trip.trip.directionId,
-            stops: []
-          };
-          
-          (trip.stopTimeUpdate || []).forEach(update => {
-            nLineData.allStopIds.add(update.stopId);
-            tripData.stops.push({
-              stopId: update.stopId,
-              arrivalTime: update.arrival?.time?.low,
-              departureTime: update.departure?.time?.low
-            });
+        const trip = entity.tripUpdate;
+        const tripData = {
+          tripId: trip.trip.tripId,
+          routeId: trip.trip.routeId,
+          directionId: trip.trip.directionId,
+          stops: []
+        };
+        
+        (trip.stopTimeUpdate || []).forEach(update => {
+          debugData.allStopIds.add(update.stopId);
+          tripData.stops.push({
+            stopId: update.stopId,
+            arrivalTime: update.arrival?.time?.low,
+            departureTime: update.departure?.time?.low
           });
-          
-          nLineData.nLineTrips.push(tripData);
+        });
+        
+        // Categorize trips
+        if (routeId === '117N') {
+          debugData.nLineTrips.push(tripData);
+        } else if (routeId === 'FREE' || routeId === 'MALL') {
+          debugData.busTrips.push(tripData);
         }
       }
     });
 
-    nLineData.allRoutes = Array.from(nLineData.allRoutes);
-    nLineData.allStopIds = Array.from(nLineData.allStopIds);
+    debugData.allRoutes = Array.from(debugData.allRoutes).sort();
+    debugData.allStopIds = Array.from(debugData.allStopIds).sort();
 
-    res.json(nLineData);
+    res.json(debugData);
 
   } catch (error) {
     console.error('Debug error:', error);
@@ -294,11 +394,13 @@ app.get('/api/rtd/debug', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'RTD N Line API Proxy is running' });
+  res.json({ status: 'ok', message: 'RTD API Proxy (Trains + Buses) is running' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚆 RTD N Line API Proxy running on port ${PORT}`);
+  console.log(`🚆 RTD API Proxy running on port ${PORT}`);
   console.log(`📍 Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`🚉 Example: http://0.0.0.0:${PORT}/api/rtd/arrivals/ustn`);
+  console.log(`🚉 Train example: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
+  console.log(`🚌 Bus example: http://0.0.0.0:${PORT}/api/rtd/bus/22367`);
+  console.log(`🔍 Debug: http://0.0.0.0:${PORT}/api/rtd/debug`);
 });
