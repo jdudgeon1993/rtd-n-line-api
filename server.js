@@ -95,6 +95,23 @@ const FREERIDE_STOPS = {
   '35368': { name: 'Civic Center Station', direction: 'both' },
 };
 
+// Free MetroRide bus stops (18th/19th Street parallel route)
+const METRORIDE_STOPS = {
+  // Outbound (Union Station to Civic Center on 19th St & Stout)
+  '34299': { name: '19th St & Stout (Outbound)', direction: 'outbound' },
+  
+  // Inbound (Civic Center to Union Station on 18th St & California)
+  '34304': { name: '18th St & California (Inbound)', direction: 'inbound' },
+  
+  // Additional MetroRide stops along the route
+  '34300': { name: '19th St & Welton', direction: 'outbound' },
+  '34301': { name: '19th St & California', direction: 'outbound' },
+  '34302': { name: '19th St & Stout', direction: 'outbound' },
+  '34303': { name: '18th St & Stout', direction: 'inbound' },
+  '34305': { name: '18th St & Champa', direction: 'inbound' },
+  '34306': { name: '18th St & Arapahoe', direction: 'inbound' },
+};
+
 // TransitLand proxy endpoint
 app.get('/api/transitland/routes', async (req, res) => {
   try {
@@ -216,11 +233,12 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
         const routeId = trip.trip.routeId;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
-        // Check if this is a route we care about (N Line OR FreeRide)
+        // Check if this is a route we care about (N Line OR FreeRide OR MetroRide)
         const isNLine = routeId === '117N';
         const isFreeRide = routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL');
+        const isMetroRide = routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO');
         
-        if (isNLine || isFreeRide) {
+        if (isNLine || isFreeRide || isMetroRide) {
           stopTimeUpdates.forEach(update => {
             if (update.stopId.toString().trim() === stopId.toString().trim()) {
               const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
@@ -233,7 +251,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
                   arrivals.push({
                     tripId: trip.trip.tripId,
                     routeId: routeId,
-                    route: isNLine ? 'N Line' : '16th St Mall',
+                    route: isNLine ? 'N Line' : isMetroRide ? 'MetroRide' : '16th St Mall',
                     directionId: trip.trip.directionId,
                     direction: trip.trip.directionId === 0 ? 'Southbound' : 'Northbound',
                     arrivalTime: arrivalTime,
@@ -260,6 +278,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
 
     const stopName = N_LINE_STOPS[stopId.toLowerCase()]?.name || 
                      FREERIDE_STOPS[stopId]?.name || 
+                     METRORIDE_STOPS[stopId]?.name ||
                      stopId;
 
     res.json({
@@ -302,8 +321,9 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
         const trip = entity.tripUpdate;
         const routeId = trip.trip.routeId;
         
-        // Filter for FreeRide routes only
-        if (routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL')) {
+        // Filter for FreeRide and MetroRide routes only
+        if (routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL') ||
+            routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO')) {
           const stopTimeUpdates = trip.stopTimeUpdate || [];
           
           stopTimeUpdates.forEach(update => {
@@ -317,7 +337,7 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
                   busArrivals.push({
                     tripId: trip.trip.tripId,
                     routeId: routeId,
-                    route: '16th St Mall',
+                    route: routeId.includes('METRO') ? 'MetroRide' : '16th St Mall',
                     arrivalTime: arrivalTime,
                     arrivalTimeFormatted: new Date(arrivalTime * 1000).toLocaleTimeString('en-US', {
                       hour: 'numeric',
@@ -339,8 +359,8 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
 
     res.json({
       stopId,
-      stopName: FREERIDE_STOPS[stopId]?.name || '16th Street Mall',
-      route: '16th St Mall FreeRide',
+      stopName: FREERIDE_STOPS[stopId]?.name || METRORIDE_STOPS[stopId]?.name || '16th Street Mall',
+      route: '16th St Mall FreeRide / MetroRide',
       timestamp: Date.now(),
       arrivals: busArrivals.slice(0, 5)
     });
