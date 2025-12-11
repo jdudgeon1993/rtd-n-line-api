@@ -403,4 +403,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚉 Train example: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
   console.log(`🚌 Bus example: http://0.0.0.0:${PORT}/api/rtd/bus/22367`);
   console.log(`🔍 Debug: http://0.0.0.0:${PORT}/api/rtd/debug`);
-});
+}); 
