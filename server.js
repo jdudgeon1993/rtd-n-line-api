@@ -36,6 +36,9 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Increased limit for task data
 
+// Explicit OPTIONS handler for all routes
+app.options('*', cors());
+
 // ==================== DATABASE SETUP ====================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -832,11 +835,22 @@ app.get('/api/rtd/debug', async (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  let dbStatus = 'not configured';
+  
+  if (process.env.DATABASE_URL && pool) {
+    try {
+      await pool.query('SELECT 1');
+      dbStatus = 'connected';
+    } catch (error) {
+      dbStatus = 'error: ' + error.message;
+    }
+  }
+  
   res.json({ 
     status: 'ok', 
     message: 'RTD API Proxy (Trains + Buses) + Ultimate Planner Sync is running',
-    database: pool ? 'connected' : 'not configured'
+    database: dbStatus
   });
 });
 
