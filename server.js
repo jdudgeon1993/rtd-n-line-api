@@ -1,30 +1,32 @@
-// RTD N Line API Proxy Server
+// RTD N Line API Proxy Server + Ultimate Planner Sync
 // This bypasses CORS restrictions for TransitLand API calls
-// NOW INCLUDES: 16th Street Mall FreeRide Bus Support!
+// NOW INCLUDES: 
+// - 16th Street Mall FreeRide Bus Support
+// - Ultimate Planner Cross-Platform Sync with PostgreSQL
 // 
 // Setup Instructions:
 // 1. Save this file as 'server.js'
-// 2. Run: npm init -y
-// 3. Run: npm install express cors node-fetch gtfs-realtime-bindings
-// 4. Run: node server.js
-// 5. Server will run on http://localhost:3001
+// 2. Run: npm install
+// 3. Add PostgreSQL database on Render
+// 4. Set DATABASE_URL environment variable
+// 5. Run: node server.js
+// 6. Server will run on PORT from environment or 3001
 
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // CRITICAL: CORS must be configured BEFORE any routes
-// This allows requests from ANY origin including Claude artifacts
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -32,7 +34,408 @@ app.use((req, res, next) => {
 });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increased limit for task data
+
+// ==================== DATABASE SETUP ====================
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Initialize database tables
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS planner_users (
+        id SERIAL PRIMARY KEY,
+        token VARCHAR(20) UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS planner_tasks (
+        id BIGINT PRIMARY KEY,
+        user_token VARCHAR(20) REFERENCES planner_users(token) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS planner_settings (
+        user_token VARCHAR(20) PRIMARY KEY REFERENCES planner_users(token) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS planner_stats (
+        user_token VARCHAR(20) PRIMARY KEY REFERENCES planner_users(token) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // Create indexes for performance
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_user_token ON planner_tasks(user_token);
+      CREATE INDEX IF NOT EXISTS idx_tasks_updated ON planner_tasks(updated_at DESC);
+    `);
+
+    console.log('✅ Database tables initialized');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+  }
+}
+
+// Generate simple memorable token
+function generateToken() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Exclude confusing chars
+  let token = 'PLAN-';
+  for (let i = 0; i < 6; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return token;
+}
+
+// ==================== PLANNER API ENDPOINTS ====================
+
+// Register new user - get a token
+app.post('/api/planner/register', async (req, res) => {
+  try {
+    let token;
+    let attempts = 0;
+    
+    // Generate unique token
+    while (attempts < 10) {
+      token = generateToken();
+      try {
+        await pool.query(
+          'INSERT INTO planner_users (token) VALUES ($1)',
+          [token]
+        );
+        break;
+      } catch (error) {
+        if (error.code === '23505') { // Duplicate key
+          attempts++;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (attempts === 10) {
+      return res.status(500).json({ error: 'Failed to generate unique token' });
+    }
+
+    console.log(`✅ New user registered: ${token}`);
+    res.json({
+      success: true,
+      token: token,
+      message: 'Save this token! You\'ll need it to access your data on any device.'
+    });
+
+  } catch (error) {
+    console.error('Register error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Verify token exists
+app.post('/api/planner/login', async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Token required' });
+    }
+
+    const result = await pool.query(
+      'SELECT token, created_at FROM planner_users WHERE token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    res.json({
+      success: true,
+      token: result.rows[0].token,
+      createdAt: result.rows[0].created_at
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all tasks for user
+app.get('/api/planner/tasks/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    // Verify token
+    const userCheck = await pool.query(
+      'SELECT token FROM planner_users WHERE token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Get all tasks
+    const result = await pool.query(
+      'SELECT id, data, updated_at FROM planner_tasks WHERE user_token = $1 ORDER BY updated_at DESC',
+      [token.toUpperCase()]
+    );
+
+    const tasks = result.rows.map(row => ({
+      ...row.data,
+      id: parseInt(row.id),
+      _syncedAt: row.updated_at
+    }));
+
+    res.json({
+      success: true,
+      tasks: tasks,
+      count: tasks.length
+    });
+
+  } catch (error) {
+    console.error('Get tasks error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save/update tasks (bulk operation)
+app.post('/api/planner/tasks/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { tasks } = req.body;
+
+    if (!Array.isArray(tasks)) {
+      return res.status(400).json({ error: 'Tasks must be an array' });
+    }
+
+    // Verify token
+    const userCheck = await pool.query(
+      'SELECT token FROM planner_users WHERE token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Use transaction for atomicity
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Delete all existing tasks for this user
+      await client.query(
+        'DELETE FROM planner_tasks WHERE user_token = $1',
+        [token.toUpperCase()]
+      );
+
+      // Insert all tasks
+      for (const task of tasks) {
+        await client.query(
+          'INSERT INTO planner_tasks (id, user_token, data, updated_at) VALUES ($1, $2, $3, NOW())',
+          [task.id, token.toUpperCase(), task]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      console.log(`✅ Synced ${tasks.length} tasks for ${token}`);
+      res.json({
+        success: true,
+        count: tasks.length,
+        message: 'Tasks synced successfully'
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error('Save tasks error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete single task
+app.delete('/api/planner/tasks/:token/:taskId', async (req, res) => {
+  try {
+    const { token, taskId } = req.params;
+
+    // Verify token
+    const userCheck = await pool.query(
+      'SELECT token FROM planner_users WHERE token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    await pool.query(
+      'DELETE FROM planner_tasks WHERE user_token = $1 AND id = $2',
+      [token.toUpperCase(), taskId]
+    );
+
+    res.json({ success: true, message: 'Task deleted' });
+
+  } catch (error) {
+    console.error('Delete task error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get settings
+app.get('/api/planner/settings/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const result = await pool.query(
+      'SELECT data FROM planner_settings WHERE user_token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ success: true, settings: null });
+    }
+
+    res.json({
+      success: true,
+      settings: result.rows[0].data
+    });
+
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save settings
+app.post('/api/planner/settings/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { settings } = req.body;
+
+    await pool.query(
+      `INSERT INTO planner_settings (user_token, data, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_token)
+       DO UPDATE SET data = $2, updated_at = NOW()`,
+      [token.toUpperCase(), settings]
+    );
+
+    res.json({ success: true, message: 'Settings saved' });
+
+  } catch (error) {
+    console.error('Save settings error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get stats
+app.get('/api/planner/stats/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const result = await pool.query(
+      'SELECT data FROM planner_stats WHERE user_token = $1',
+      [token.toUpperCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ success: true, stats: null });
+    }
+
+    res.json({
+      success: true,
+      stats: result.rows[0].data
+    });
+
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save stats
+app.post('/api/planner/stats/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { stats } = req.body;
+
+    await pool.query(
+      `INSERT INTO planner_stats (user_token, data, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_token)
+       DO UPDATE SET data = $2, updated_at = NOW()`,
+      [token.toUpperCase(), stats]
+    );
+
+    res.json({ success: true, message: 'Stats saved' });
+
+  } catch (error) {
+    console.error('Save stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check sync status
+app.get('/api/planner/sync/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const result = await pool.query(
+      'SELECT COUNT(*) as task_count, MAX(updated_at) as last_sync FROM planner_tasks WHERE user_token = $1',
+      [token.toUpperCase()]
+    );
+
+    res.json({
+      success: true,
+      taskCount: parseInt(result.rows[0].task_count),
+      lastSync: result.rows[0].last_sync
+    });
+
+  } catch (error) {
+    console.error('Sync check error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete account (for testing/cleanup)
+app.delete('/api/planner/account/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    await pool.query(
+      'DELETE FROM planner_users WHERE token = $1',
+      [token.toUpperCase()]
+    );
+
+    res.json({ success: true, message: 'Account deleted' });
+
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== RTD TRANSIT API (ORIGINAL CODE) ====================
 
 // Your TransitLand API key
 const TRANSITLAND_API_KEY = 'TXTmQ3It74ub7L4huB6mgBxUJ824DRLG';
@@ -42,9 +445,7 @@ const RTD_TRIP_UPDATES = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/Tri
 const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb';
 
 // N Line stop IDs (from RTD GTFS data - numeric IDs)
-// Based on actual GTFS-RT feed data
 const N_LINE_STOPS = {
-  // Union Station to Eastlake/124th (Northbound direction 0)
   '34668': { name: 'Union Station', direction: 'both' },
   '35247': { name: '38th & Blake', direction: 'northbound' },
   '35249': { name: '40th & Colorado', direction: 'northbound' },
@@ -52,28 +453,19 @@ const N_LINE_STOPS = {
   '35253': { name: 'Commerce City/72nd', direction: 'northbound' },
   '35255': { name: 'Thornton Crossroads/104th', direction: 'northbound' },
   '35257': { name: 'Eastlake/124th', direction: 'northbound' },
-  
-  // Eastlake/124th to Union Station (Southbound direction 1)
   '35365': { name: 'Northglenn/112th', direction: 'southbound' },
   '35254': { name: 'Thornton Crossroads/104th', direction: 'southbound' },
   '35252': { name: 'Commerce City/72nd', direction: 'southbound' },
   '35250': { name: '61st & Pena', direction: 'southbound' },
   '35248': { name: '40th & Colorado', direction: 'southbound' },
   '35246': { name: '38th & Blake', direction: 'southbound' },
-  
-  // Legacy text IDs for compatibility
   'ustn': { name: 'Union Station', actualId: '34668' },
-  '34668': { name: 'Union Station', direction: 'both' }
 };
 
 // 16th Street Mall FreeRide bus stops
-// Common stops along the 16th Street Mall route
 const FREERIDE_STOPS = {
-  // Union Station area
   '34668': { name: 'Union Station', direction: 'both' },
   '35367': { name: 'Union Station Bus Gates', direction: 'both' },
-  
-  // 16th Street Mall stops (heading toward Civic Center)
   '22358': { name: '16th St Mall & Wynkoop', direction: 'both' },
   '22359': { name: '16th St Mall & Wazee', direction: 'both' },
   '22360': { name: '16th St Mall & Blake', direction: 'both' },
@@ -90,20 +482,13 @@ const FREERIDE_STOPS = {
   '22371': { name: '16th St Mall & Tremont', direction: 'both' },
   '22372': { name: '16th St Mall & Court', direction: 'both' },
   '22373': { name: '16th St Mall & Cleveland', direction: 'both' },
-  
-  // Civic Center Station
   '35368': { name: 'Civic Center Station', direction: 'both' },
 };
 
-// Free MetroRide bus stops (18th/19th Street parallel route)
+// Free MetroRide bus stops
 const METRORIDE_STOPS = {
-  // Outbound (Union Station to Civic Center on 19th St & Stout)
   '34299': { name: '19th St & Stout (Outbound)', direction: 'outbound' },
-  
-  // Inbound (Civic Center to Union Station on 18th St & California)
   '34304': { name: '18th St & California (Inbound)', direction: 'inbound' },
-  
-  // Additional MetroRide stops along the route
   '34300': { name: '19th St & Welton', direction: 'outbound' },
   '34301': { name: '19th St & California', direction: 'outbound' },
   '34302': { name: '19th St & Stout', direction: 'outbound' },
@@ -143,7 +528,6 @@ app.get('/api/rtd/arrivals', async (req, res) => {
   try {
     console.log('Fetching RTD trip updates...');
     
-    // Add cache-busting query parameter
     const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
       headers: {
         'Cache-Control': 'no-cache',
@@ -153,12 +537,10 @@ app.get('/api/rtd/arrivals', async (req, res) => {
     
     const buffer = await response.arrayBuffer();
     
-    // Parse the protocol buffer
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
       new Uint8Array(buffer)
     );
 
-    // Filter for N Line trips only
     const nLineArrivals = [];
     
     feed.entity.forEach(entity => {
@@ -169,7 +551,6 @@ app.get('/api/rtd/arrivals', async (req, res) => {
         stopTimeUpdates.forEach(update => {
           const stopId = update.stopId.toString().trim();
           
-          // Check if this is an N Line stop
           if (N_LINE_STOPS[stopId]) {
             const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
             
@@ -190,7 +571,6 @@ app.get('/api/rtd/arrivals', async (req, res) => {
       }
     });
 
-    // Sort by arrival time
     nLineArrivals.sort((a, b) => a.arrivalTime - b.arrivalTime);
 
     console.log(`Found ${nLineArrivals.length} N Line arrivals`);
@@ -211,7 +591,6 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const { stopId } = req.params;
     console.log(`Fetching arrivals for stop: ${stopId}`);
     
-    // Add cache-busting
     const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
       headers: {
         'Cache-Control': 'no-cache',
@@ -233,7 +612,6 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
         const routeId = trip.trip.routeId;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
         
-        // Check if this is a route we care about (N Line OR FreeRide OR MetroRide)
         const isNLine = routeId === '117N';
         const isFreeRide = routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL');
         const isMetroRide = routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO');
@@ -246,7 +624,6 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
               if (arrivalTime) {
                 const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
                 
-                // Only show upcoming arrivals (within next 2 hours)
                 if (minutesUntil >= -5 && minutesUntil <= 120) {
                   arrivals.push({
                     tripId: trip.trip.tripId,
@@ -287,7 +664,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
       timestamp: Date.now(),
       feedTimestamp: feedTimestamp,
       feedAgeMinutes: feedAge,
-      arrivals: arrivals.slice(0, 10) // Return next 10 arrivals
+      arrivals: arrivals.slice(0, 10)
     });
 
   } catch (error) {
@@ -296,7 +673,7 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   }
 });
 
-// NEW: Dedicated bus endpoint for 16th Street Mall FreeRide
+// Dedicated bus endpoint for 16th Street Mall FreeRide
 app.get('/api/rtd/bus/:stopId', async (req, res) => {
   try {
     const { stopId } = req.params;
@@ -321,7 +698,6 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
         const trip = entity.tripUpdate;
         const routeId = trip.trip.routeId;
         
-        // Filter for FreeRide and MetroRide routes only
         if (routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL') ||
             routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO')) {
           const stopTimeUpdates = trip.stopTimeUpdate || [];
@@ -371,7 +747,7 @@ app.get('/api/rtd/bus/:stopId', async (req, res) => {
   }
 });
 
-// Debug endpoint - see all routes and stops
+// Debug endpoint
 app.get('/api/rtd/debug', async (req, res) => {
   try {
     console.log('Fetching ALL RTD trip updates for debugging...');
@@ -413,7 +789,6 @@ app.get('/api/rtd/debug', async (req, res) => {
           });
         });
         
-        // Categorize trips
         if (routeId === '117N') {
           debugData.nLineTrips.push(tripData);
         } else if (routeId === 'FREE' || routeId === 'MALL') {
@@ -435,13 +810,49 @@ app.get('/api/rtd/debug', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'RTD API Proxy (Trains + Buses) is running' });
+  res.json({ 
+    status: 'ok', 
+    message: 'RTD API Proxy (Trains + Buses) + Ultimate Planner Sync is running',
+    database: pool ? 'connected' : 'not configured'
+  });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚆 RTD API Proxy running on port ${PORT}`);
-  console.log(`📍 Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`🚉 Train example: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
-  console.log(`🚌 Bus example: http://0.0.0.0:${PORT}/api/rtd/bus/22367`);
-  console.log(`🔍 Debug: http://0.0.0.0:${PORT}/api/rtd/debug`);
+// Planner API health check
+app.get('/api/planner/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Ultimate Planner API is ready',
+    endpoints: {
+      register: 'POST /api/planner/register',
+      login: 'POST /api/planner/login',
+      tasks: 'GET/POST /api/planner/tasks/:token',
+      settings: 'GET/POST /api/planner/settings/:token',
+      stats: 'GET/POST /api/planner/stats/:token',
+      sync: 'GET /api/planner/sync/:token'
+    }
+  });
+});
+
+// Start server and initialize database
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log(`\n🚀 RTD API Proxy + Ultimate Planner Sync Server`);
+  console.log(`📍 Running on port ${PORT}\n`);
+  console.log(`Health checks:`);
+  console.log(`  🏥 General: http://0.0.0.0:${PORT}/health`);
+  console.log(`  📱 Planner: http://0.0.0.0:${PORT}/api/planner/health\n`);
+  console.log(`RTD Examples:`);
+  console.log(`  🚉 Train: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
+  console.log(`  🚌 Bus: http://0.0.0.0:${PORT}/api/rtd/bus/22367\n`);
+  console.log(`Planner Examples:`);
+  console.log(`  📝 Register: POST http://0.0.0.0:${PORT}/api/planner/register`);
+  console.log(`  🔐 Login: POST http://0.0.0.0:${PORT}/api/planner/login`);
+  console.log(`  📋 Tasks: GET http://0.0.0.0:${PORT}/api/planner/tasks/PLAN-ABC123\n`);
+  
+  // Initialize database
+  if (process.env.DATABASE_URL) {
+    await initDatabase();
+  } else {
+    console.log('⚠️  No DATABASE_URL found - planner sync disabled');
+    console.log('   Add PostgreSQL database in Render dashboard\n');
+  }
 });
