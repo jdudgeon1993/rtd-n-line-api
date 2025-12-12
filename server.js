@@ -104,7 +104,30 @@ function generateToken() {
 
 // Register new user - get a token
 app.post('/api/planner/register', async (req, res) => {
+  // Set CORS headers explicitly
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Content-Type', 'application/json');
+  
   try {
+    // Check if database is connected
+    if (!pool) {
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Database not configured. Please add DATABASE_URL environment variable.' 
+      });
+    }
+
+    // Test database connection
+    try {
+      await pool.query('SELECT 1');
+    } catch (dbError) {
+      console.error('Database connection error:', dbError);
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Database connection failed: ' + dbError.message 
+      });
+    }
+
     let token;
     let attempts = 0;
     
@@ -127,7 +150,7 @@ app.post('/api/planner/register', async (req, res) => {
     }
 
     if (attempts === 10) {
-      return res.status(500).json({ error: 'Failed to generate unique token' });
+      return res.status(500).json({ success: false, error: 'Failed to generate unique token' });
     }
 
     console.log(`✅ New user registered: ${token}`);
@@ -139,7 +162,7 @@ app.post('/api/planner/register', async (req, res) => {
 
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
