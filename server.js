@@ -398,6 +398,48 @@ app.get('/api/planner/stats/:token', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// ==================== SHORT TOKEN SYNC (PLAN-XXXXX) ====================
+const syncTokens = new Map();
+
+// POST: Generate sync token and store data
+app.post('/sync/:id', async (req, res) => {
+    try {
+        const tokenId = req.params.id.toUpperCase();
+        const syncData = req.body;
+        const expiryTime = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
+        
+        syncTokens.set(tokenId, { 
+            data: syncData, 
+            expiresAt: expiryTime 
+        });
+        
+        res.json({ 
+            success: true, 
+            token: `PLAN-${tokenId}`, 
+            expiresIn: '24 hours' 
+        });
+    } catch (error) {
+        console.error('Sync token generation error:', error);
+        res.status(500).json({ error: 'Failed to generate sync token' });
+    }
+});
+
+// GET: Retrieve data by sync token
+app.get('/sync/:id', async (req, res) => {
+    try {
+        const tokenId = req.params.id.toUpperCase();
+        const tokenData = syncTokens.get(tokenId);
+        
+        if (!tokenData || Date.now() > tokenData.expiresAt) {
+            return res.status(404).json({ error: 'Token not found or expired' });
+        }
+        
+        res.json(tokenData.data);
+    } catch (error) {
+        console.error('Sync token retrieval error:', error);
+        res.status(500).json({ error: 'Failed to retrieve sync data' });
+    }
+});
 
 // Save stats
 app.post('/api/planner/stats/:token', async (req, res) => {
