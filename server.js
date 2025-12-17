@@ -87,6 +87,21 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_tasks_updated ON planner_tasks(updated_at DESC);
     `);
 
+    // Create sync tokens table for cross-browser sync
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sync_tokens (
+        token_id VARCHAR(10) PRIMARY KEY,
+        data JSONB NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // Create index for cleanup of expired tokens
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sync_tokens_expires ON sync_tokens(expires_at);
+    `);
+
     console.log('✅ Database tables initialized');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
@@ -398,25 +413,30 @@ app.get('/api/planner/stats/:token', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ==================== SHORT TOKEN SYNC (PLAN-XXXXX) ====================
-const syncTokens = new Map();
 
 // POST: Generate sync token and store data
 app.post('/sync/:id', async (req, res) => {
     try {
         const tokenId = req.params.id.toUpperCase();
         const syncData = req.body;
-        const expiryTime = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
-        
-        syncTokens.set(tokenId, { 
-            data: syncData, 
-            expiresAt: expiryTime 
-        });
-        
-        res.json({ 
-            success: true, 
-            token: `PLAN-${tokenId}`, 
-            expiresIn: '24 hours' 
+        const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000)); // 24 hours from now
+
+        // Store in PostgreSQL for persistence across server restarts
+        await pool.query(
+            `INSERT INTO sync_tokens (token_id, data, expires_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (token_id)
+             DO UPDATE SET data = $2, expires_at = $3, created_at = NOW()`,
+            [tokenId, syncData, expiresAt]
+        );
+
+        console.log(`✅ Sync token generated: PLAN-${tokenId}`);
+        res.json({
+            success: true,
+            token: `PLAN-${tokenId}`,
+            expiresIn: '24 hours'
         });
     } catch (error) {
         console.error('Sync token generation error:', error);
@@ -428,13 +448,22 @@ app.post('/sync/:id', async (req, res) => {
 app.get('/sync/:id', async (req, res) => {
     try {
         const tokenId = req.params.id.toUpperCase();
-        const tokenData = syncTokens.get(tokenId);
-        
-        if (!tokenData || Date.now() > tokenData.expiresAt) {
+
+        // Clean up expired tokens first
+        await pool.query('DELETE FROM sync_tokens WHERE expires_at < NOW()');
+
+        // Fetch the token data
+        const result = await pool.query(
+            'SELECT data, expires_at FROM sync_tokens WHERE token_id = $1',
+            [tokenId]
+        );
+
+        if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Token not found or expired' });
         }
-        
-        res.json(tokenData.data);
+
+        console.log(`✅ Sync token retrieved: PLAN-${tokenId}`);
+        res.json(result.rows[0].data);
     } catch (error) {
         console.error('Sync token retrieval error:', error);
         res.status(500).json({ error: 'Failed to retrieve sync data' });
