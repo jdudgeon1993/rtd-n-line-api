@@ -1,9 +1,10 @@
 // RTD N Line API Proxy Server + Ultimate Planner Sync
 // This bypasses CORS restrictions for TransitLand API calls
-// NOW INCLUDES: 
+// NOW INCLUDES:
 // - 16th Street Mall FreeRide Bus Support
 // - Ultimate Planner Cross-Platform Sync with PostgreSQL
-// 
+// - VEHICLE POSITIONS (Real-time GPS tracking)
+//
 // Setup Instructions:
 // 1. Save this file as 'server.js'
 // 2. Run: npm install
@@ -26,7 +27,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -125,13 +126,13 @@ app.post('/api/planner/register', async (req, res) => {
   // Set CORS headers explicitly
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Content-Type', 'application/json');
-  
+
   try {
     // Check if database is connected
     if (!pool) {
-      return res.status(503).json({ 
-        success: false, 
-        error: 'Database not configured. Please add DATABASE_URL environment variable.' 
+      return res.status(503).json({
+        success: false,
+        error: 'Database not configured. Please add DATABASE_URL environment variable.'
       });
     }
 
@@ -140,15 +141,15 @@ app.post('/api/planner/register', async (req, res) => {
       await pool.query('SELECT 1');
     } catch (dbError) {
       console.error('Database connection error:', dbError);
-      return res.status(503).json({ 
-        success: false, 
-        error: 'Database connection failed: ' + dbError.message 
+      return res.status(503).json({
+        success: false,
+        error: 'Database connection failed: ' + dbError.message
       });
     }
 
     let token;
     let attempts = 0;
-    
+
     // Generate unique token
     while (attempts < 10) {
       token = generateToken();
@@ -538,8 +539,8 @@ app.delete('/api/planner/account/:token', async (req, res) => {
 const TRANSITLAND_API_KEY = 'TXTmQ3It74ub7L4huB6mgBxUJ824DRLG';
 
 // RTD GTFS-RT feed URLs
-const RTD_TRIP_UPDATES = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/TripUpdate.pb';
-const RTD_VEHICLE_POSITIONS = 'https://open-data.rtd-denver.com/files/gtfs-rt/rtd/VehiclePosition.pb';
+const RTD_TRIP_UPDATES = 'https://www.rtd-denver.com/files/gtfs-rt/TripUpdate.pb';
+const RTD_VEHICLE_POSITIONS = 'https://www.rtd-denver.com/files/gtfs-rt/VehiclePosition.pb';
 
 // N Line stop IDs (from RTD GTFS data - numeric IDs)
 const N_LINE_STOPS = {
@@ -624,33 +625,33 @@ app.get('/api/transitland/stops', async (req, res) => {
 app.get('/api/rtd/arrivals', async (req, res) => {
   try {
     console.log('Fetching RTD trip updates...');
-    
+
     const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
       headers: {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
       }
     });
-    
+
     const buffer = await response.arrayBuffer();
-    
+
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
       new Uint8Array(buffer)
     );
 
     const nLineArrivals = [];
-    
+
     feed.entity.forEach(entity => {
       if (entity.tripUpdate && entity.tripUpdate.trip.routeId === '117N') {
         const trip = entity.tripUpdate;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
-        
+
         stopTimeUpdates.forEach(update => {
           const stopId = update.stopId.toString().trim();
-          
+
           if (N_LINE_STOPS[stopId]) {
             const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-            
+
             if (arrivalTime) {
               nLineArrivals.push({
                 stopId: stopId,
@@ -687,40 +688,40 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   try {
     const { stopId } = req.params;
     console.log(`Fetching arrivals for stop: ${stopId}`);
-    
+
     const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
       headers: {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
       }
     });
-    
+
     const buffer = await response.arrayBuffer();
-    
+
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
       new Uint8Array(buffer)
     );
 
     const arrivals = [];
-    
+
     feed.entity.forEach(entity => {
       if (entity.tripUpdate) {
         const trip = entity.tripUpdate;
         const routeId = trip.trip.routeId;
         const stopTimeUpdates = trip.stopTimeUpdate || [];
-        
+
         const isNLine = routeId === '117N';
         const isFreeRide = routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL');
         const isMetroRide = routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO');
-        
+
         if (isNLine || isFreeRide || isMetroRide) {
           stopTimeUpdates.forEach(update => {
             if (update.stopId.toString().trim() === stopId.toString().trim()) {
               const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-              
+
               if (arrivalTime) {
                 const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
-                
+
                 if (minutesUntil >= -5 && minutesUntil <= 120) {
                   arrivals.push({
                     tripId: trip.trip.tripId,
@@ -750,8 +751,8 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
     const feedTimestamp = feed.header?.timestamp?.low || Math.floor(Date.now() / 1000);
     const feedAge = Math.floor((Date.now() / 1000 - feedTimestamp) / 60);
 
-    const stopName = N_LINE_STOPS[stopId.toLowerCase()]?.name || 
-                     FREERIDE_STOPS[stopId]?.name || 
+    const stopName = N_LINE_STOPS[stopId.toLowerCase()]?.name ||
+                     FREERIDE_STOPS[stopId]?.name ||
                      METRORIDE_STOPS[stopId]?.name ||
                      stopId;
 
@@ -770,42 +771,137 @@ app.get('/api/rtd/arrivals/:stopId', async (req, res) => {
   }
 });
 
+// ==================== NEW: VEHICLE POSITIONS (GPS TRACKING) ====================
+
+// RTD Vehicle Positions API - Real-time GPS tracking
+app.get('/api/rtd/vehicle-positions', async (req, res) => {
+  try {
+    console.log('🚆 Fetching RTD Vehicle Positions from GTFS-RT');
+
+    // Fetch RTD's GTFS-RT VehiclePosition feed
+    const response = await fetch(RTD_VEHICLE_POSITIONS);
+
+    if (!response.ok) {
+      throw new Error(`GTFS-RT Vehicle Positions feed returned ${response.status}`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(new Uint8Array(buffer));
+
+    console.log(`📊 GTFS-RT feed has ${feed.entity.length} vehicle entities`);
+
+    // Parse vehicle positions
+    const vehicles = [];
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const entity of feed.entity) {
+      if (entity.vehicle) {
+        const vehicle = entity.vehicle;
+        const trip = vehicle.trip;
+        const position = vehicle.position;
+
+        // Filter for N Line, G Line, and B Line only
+        const routeId = trip?.routeId;
+        if (routeId === '117N' || routeId === '113G' || routeId === '113B') {
+          const timestamp = Number(vehicle.timestamp);
+
+          vehicles.push({
+            id: vehicle.vehicle?.id || entity.id,
+            label: vehicle.vehicle?.label || 'Unknown',
+            routeId: routeId,
+            tripId: trip?.tripId,
+            directionId: trip?.directionId ?? 0,
+            latitude: position?.latitude,
+            longitude: position?.longitude,
+            bearing: position?.bearing,
+            speed: position?.speed,
+            currentStopSequence: vehicle.currentStopSequence,
+            currentStopId: vehicle.stopId,
+            currentStatus: vehicle.currentStatus, // INCOMING_AT, STOPPED_AT, IN_TRANSIT_TO
+            timestamp: timestamp,
+            timestampFormatted: timestamp ? new Date(timestamp * 1000).toLocaleTimeString('en-US', {
+              timeZone: 'America/Denver',
+              hour: 'numeric',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: true
+            }) : null,
+            congestionLevel: vehicle.congestionLevel,
+            occupancyStatus: vehicle.occupancyStatus,
+            age: timestamp ? now - timestamp : null // Age of position data in seconds
+          });
+        }
+      }
+    }
+
+    // Sort by route and direction
+    vehicles.sort((a, b) => {
+      if (a.routeId !== b.routeId) {
+        return a.routeId.localeCompare(b.routeId);
+      }
+      return (a.directionId || 0) - (b.directionId || 0);
+    });
+
+    const result = {
+      timestamp: Date.now(),
+      feedTimestamp: Number(feed.header.timestamp) * 1000,
+      feedAgeSeconds: now - Number(feed.header.timestamp),
+      vehicleCount: vehicles.length,
+      vehicles: vehicles,
+      routeSummary: {
+        '117N': vehicles.filter(v => v.routeId === '117N').length,
+        '113G': vehicles.filter(v => v.routeId === '113G').length,
+        '113B': vehicles.filter(v => v.routeId === '113B').length
+      }
+    };
+
+    console.log(`✅ Found ${vehicles.length} active vehicles:`, result.routeSummary);
+
+    res.json(result);
+  } catch (error) {
+    console.error('❌ GTFS-RT Vehicle Positions error:', error);
+    res.status(500).json({ error: 'Failed to fetch vehicle positions', details: error.message });
+  }
+});
+
+// ==================== ORIGINAL BUS/DEBUG ENDPOINTS ====================
+
 // Dedicated bus endpoint for 16th Street Mall FreeRide
 app.get('/api/rtd/bus/:stopId', async (req, res) => {
   try {
     const { stopId } = req.params;
     console.log(`Fetching bus arrivals for stop: ${stopId}`);
-    
+
     const response = await fetch(`${RTD_TRIP_UPDATES}?t=${Date.now()}`, {
       headers: {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
       }
     });
-    
+
     const buffer = await response.arrayBuffer();
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
       new Uint8Array(buffer)
     );
 
     const busArrivals = [];
-    
+
     feed.entity.forEach(entity => {
       if (entity.tripUpdate) {
         const trip = entity.tripUpdate;
         const routeId = trip.trip.routeId;
-        
+
         if (routeId === 'MALL' || routeId === 'FREE' || routeId === 'MALLRIDE' || routeId.includes('MALL') ||
             routeId === 'METRO' || routeId === 'METRORIDE' || routeId.includes('METRO')) {
           const stopTimeUpdates = trip.stopTimeUpdate || [];
-          
+
           stopTimeUpdates.forEach(update => {
             if (update.stopId.toString().trim() === stopId.toString().trim()) {
               const arrivalTime = update.arrival?.time?.low || update.departure?.time?.low;
-              
+
               if (arrivalTime) {
                 const minutesUntil = Math.round((arrivalTime - Date.now() / 1000) / 60);
-                
+
                 if (minutesUntil >= -2 && minutesUntil <= 60) {
                   busArrivals.push({
                     tripId: trip.trip.tripId,
@@ -850,7 +946,7 @@ app.get('/api/rtd/debug', async (req, res) => {
     console.log('Fetching ALL RTD trip updates for debugging...');
     const response = await fetch(RTD_TRIP_UPDATES);
     const buffer = await response.arrayBuffer();
-    
+
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
       new Uint8Array(buffer)
     );
@@ -863,12 +959,12 @@ app.get('/api/rtd/debug', async (req, res) => {
       allRoutes: new Set(),
       allStopIds: new Set()
     };
-    
+
     feed.entity.forEach(entity => {
       if (entity.tripUpdate) {
         const routeId = entity.tripUpdate.trip.routeId;
         debugData.allRoutes.add(routeId);
-        
+
         const trip = entity.tripUpdate;
         const tripData = {
           tripId: trip.trip.tripId,
@@ -876,7 +972,7 @@ app.get('/api/rtd/debug', async (req, res) => {
           directionId: trip.trip.directionId,
           stops: []
         };
-        
+
         (trip.stopTimeUpdate || []).forEach(update => {
           debugData.allStopIds.add(update.stopId);
           tripData.stops.push({
@@ -885,7 +981,7 @@ app.get('/api/rtd/debug', async (req, res) => {
             departureTime: update.departure?.time?.low
           });
         });
-        
+
         if (routeId === '117N') {
           debugData.nLineTrips.push(tripData);
         } else if (routeId === 'FREE' || routeId === 'MALL') {
@@ -905,10 +1001,12 @@ app.get('/api/rtd/debug', async (req, res) => {
   }
 });
 
+// ==================== HEALTH CHECKS ====================
+
 // Health check
 app.get('/health', async (req, res) => {
   let dbStatus = 'not configured';
-  
+
   if (process.env.DATABASE_URL && pool) {
     try {
       await pool.query('SELECT 1');
@@ -917,11 +1015,12 @@ app.get('/health', async (req, res) => {
       dbStatus = 'error: ' + error.message;
     }
   }
-  
-  res.json({ 
-    status: 'ok', 
-    message: 'RTD API Proxy (Trains + Buses) + Ultimate Planner Sync is running',
-    database: dbStatus
+
+  res.json({
+    status: 'ok',
+    message: 'RTD API Proxy (Trains + Buses + Vehicle Tracking) + Ultimate Planner Sync is running',
+    database: dbStatus,
+    features: ['trip-updates', 'vehicle-positions', 'planner-sync']
   });
 });
 
@@ -941,6 +1040,8 @@ app.get('/api/planner/health', (req, res) => {
   });
 });
 
+// ==================== SERVER START ====================
+
 // Start server and initialize database
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`\n🚀 RTD API Proxy + Ultimate Planner Sync Server`);
@@ -950,12 +1051,13 @@ app.listen(PORT, '0.0.0.0', async () => {
   console.log(`  📱 Planner: http://0.0.0.0:${PORT}/api/planner/health\n`);
   console.log(`RTD Examples:`);
   console.log(`  🚉 Train: http://0.0.0.0:${PORT}/api/rtd/arrivals/34668`);
-  console.log(`  🚌 Bus: http://0.0.0.0:${PORT}/api/rtd/bus/22367\n`);
+  console.log(`  🚌 Bus: http://0.0.0.0:${PORT}/api/rtd/bus/22367`);
+  console.log(`  🚆 Vehicles: http://0.0.0.0:${PORT}/api/rtd/vehicle-positions\n`);
   console.log(`Planner Examples:`);
   console.log(`  📝 Register: POST http://0.0.0.0:${PORT}/api/planner/register`);
   console.log(`  🔐 Login: POST http://0.0.0.0:${PORT}/api/planner/login`);
   console.log(`  📋 Tasks: GET http://0.0.0.0:${PORT}/api/planner/tasks/PLAN-ABC123\n`);
-  
+
   // Initialize database
   if (process.env.DATABASE_URL) {
     await initDatabase();
